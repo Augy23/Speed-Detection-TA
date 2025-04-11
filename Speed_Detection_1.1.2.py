@@ -7,7 +7,7 @@ import threading
 
 # Constants
 FPS = 30  # Frame rate video
-DISTANCE_PER_PIXEL = 0.05  # Estimasi jarak tiap piksel dalam meter (harus dikalibrasi)
+DISTANCE_PER_PIXEL = 0.006  # Estimasi jarak tiap piksel dalam meter (harus dikalibrasi)
 SPEED_THRESHOLD = 20  # Ambang batas kecepatan dalam km/jam
 CONFIDENCE_THRESHOLD = 0.5  # Confidence threshold for object detection
 
