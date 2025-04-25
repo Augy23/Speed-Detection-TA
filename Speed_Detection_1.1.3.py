@@ -54,6 +54,10 @@ def process_camera(camera_index, window_name):
         print(f"Error: Kamera {camera_index} tidak bisa dibuka.")
         return
 
+    # ✅ Atur resolusi agar ringan untuk Raspberry Pi
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+
     prev_positions = {}
 
     while cap.isOpened():
@@ -109,7 +113,10 @@ def process_camera(camera_index, window_name):
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
 
         prev_positions = new_positions
-        cv2.imshow(window_name, frame)
+
+        # ✅ Resize sebelum ditampilkan agar lebih ringan di Pi
+        small_frame = cv2.resize(frame, (640, 480))
+        cv2.imshow(window_name, small_frame)
 
         if cv2.waitKey(1) & 0xFF == ord('x'):
             break
