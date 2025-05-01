@@ -1,134 +1,104 @@
 import cv2
-from datetime import datetime
+import time
+import threading
 from ultralytics import YOLO
 import numpy as np
-import easyocr
-import threading
+import pytesseract
+from datetime import datetime
 
-# Konstanta
+# Constants
 FPS = 30
-DISTANCE_PER_PIXEL = 0.00625  # 1 meter ≈ 160 piksel pada ketinggian 4 meter
-SPEED_THRESHOLD = 20  # km/jam
+DISTANCE_PER_PIXEL = 0.00625  # ~1m = 160px (4m height)
+SPEED_THRESHOLD = 20  # km/h
 CONFIDENCE_THRESHOLD = 0.5
+SWITCH_INTERVAL = 5  # seconds
 
-# Inisialisasi model dan OCR
-model = YOLO("yolov8n.pt")
-reader = easyocr.Reader(['en'])
+# Load YOLO model
+model = YOLO("yolov8n.pt")  # Replace with .onnx version if needed
+COCO_CLASSES = {2: "Mobil", 3: "Motor"}
 
-# Kelas objek yang ingin dideteksi
-COCO_CLASSES = {
-    0: "Orang",
-    2: "Mobil",
-    3: "Motor"
-}
-
-def match_objects(prev_boxes, new_boxes):
-    matched_objects = {}
-    for new_id, data in new_boxes.items():
-        if isinstance(data, dict) and "bbox" in data:
-            matched_objects[new_id] = data
-    return matched_objects
-
-def calculate_speed(prev_center, curr_center, fps, distance_per_pixel):
-    distance_px = np.sqrt((curr_center[0] - prev_center[0]) ** 2 + (curr_center[1] - prev_center[1]) ** 2)
-    distance_m = distance_px * distance_per_pixel
-    speed_mps = distance_m * fps
-    speed_kmh = speed_mps * 3.6
-    return speed_kmh
-
-def detect_license_plate(image, bbox):
-    if isinstance(bbox, tuple) and len(bbox) == 4:
+# OCR function (runs in a separate thread)
+def run_ocr_async(frame, bbox, cam_index, speed_kmh):
+    def task():
         x1, y1, x2, y2 = bbox
-        plate_region = image[y1:y2, x1:x2]
+        plate_region = frame[y2 - 30:y2, x1:x2]
         if plate_region.size == 0:
-            return "Unknown"
-        gray_plate = cv2.cvtColor(plate_region, cv2.COLOR_BGR2GRAY)
-        results = reader.readtext(gray_plate)
-        if results:
-            return results[0][-2]
-    return "Unknown"
+            log_result("Unknown", speed_kmh, cam_index)
+            return
 
-def process_camera(camera_index, window_name):
+        gray = cv2.cvtColor(plate_region, cv2.COLOR_BGR2GRAY)
+        gray = cv2.resize(gray, None, fx=2, fy=2)
+        plate_text = pytesseract.image_to_string(gray, config='--psm 7').strip()
+        log_result(plate_text, speed_kmh, cam_index)
+    threading.Thread(target=task).start()
+
+# Log speed violations
+def log_result(plate, speed, cam_index):
+    with open("speed_log.txt", "a") as log_file:
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        log_file.write(f"[{timestamp}] Cam {cam_index} | Speed: {speed:.2f} km/h | Plate: {plate}\n")
+    print(f"[LOG] Cam {cam_index} | {speed:.2f} km/h | Plate: {plate}")
+
+# Speed calculation
+def calculate_speed(prev, curr):
+    dist_px = np.linalg.norm(np.array(curr) - np.array(prev))
+    speed = dist_px * DISTANCE_PER_PIXEL * FPS * 3.6
+    return speed
+
+# Process camera
+def process_camera(camera_index):
     cap = cv2.VideoCapture(camera_index)
     if not cap.isOpened():
-        print(f"Error: Kamera {camera_index} tidak bisa dibuka.")
+        print(f"[ERROR] Kamera {camera_index} tidak bisa dibuka.")
         return
 
-    # ✅ Resolusi ringan agar tidak HD di Raspberry Pi
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 320)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 240)
-
     prev_positions = {}
+    start = time.time()
 
-    while cap.isOpened():
+    while time.time() - start < SWITCH_INTERVAL:
         ret, frame = cap.read()
         if not ret:
             break
 
-        results = model(frame)
+        results = model(frame, verbose=False)
         new_positions = {}
 
         for r in results:
             for box, cls, conf in zip(r.boxes.xyxy, r.boxes.cls, r.boxes.conf):
-                class_id = int(cls)
-                if conf > CONFIDENCE_THRESHOLD and class_id in COCO_CLASSES:
+                if int(cls) in COCO_CLASSES and conf > CONFIDENCE_THRESHOLD:
                     x1, y1, x2, y2 = map(int, box)
                     center = ((x1 + x2) // 2, (y1 + y2) // 2)
-                    label = COCO_CLASSES[class_id]
+                    label = COCO_CLASSES[int(cls)]
+                    object_id = len(new_positions)
 
-                    data = {
+                    new_positions[object_id] = {
                         "bbox": (x1, y1, x2, y2),
-                        "label": label,
-                        "center": center
+                        "center": center,
+                        "label": label
                     }
 
-                    new_positions[len(new_positions)] = data
-
-                    if label in ["Mobil", "Motor"]:
-                        plate_number = detect_license_plate(frame, (x1, y2 - 30, x2, y2))
-                        cv2.putText(frame, f"{label} - {plate_number}", (x1, y1 - 25),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
-                    else:
-                        cv2.putText(frame, label, (x1, y1 - 10),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+                    if object_id in prev_positions:
+                        prev_center = prev_positions[object_id]["center"]
+                        speed = calculate_speed(prev_center, center)
+                        color = (0, 0, 255) if speed > SPEED_THRESHOLD else (255, 255, 255)
+                        cv2.putText(frame, f"{speed:.1f} km/h", (x1, y2 + 20),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+                        if speed > SPEED_THRESHOLD:
+                            run_ocr_async(frame.copy(), (x1, y1, x2, y2), camera_index, speed)
 
                     cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-
-        matched_objects = match_objects(prev_positions, new_positions)
-
-        for object_id, data in matched_objects.items():
-            if isinstance(data, dict) and "bbox" in data and "center" in data:
-                bbox = data["bbox"]
-                label = data["label"]
-                center = data["center"]
-                x1, y1, x2, y2 = bbox
-
-                if object_id in prev_positions:
-                    prev_center = prev_positions[object_id]["center"]
-
-                    if label in ["Mobil", "Motor"]:
-                        speed = calculate_speed(prev_center, center, FPS, DISTANCE_PER_PIXEL)
-                        color = (0, 0, 255) if speed > SPEED_THRESHOLD else (255, 255, 255)
-                        cv2.putText(frame, f"{speed:.2f} km/h", (x1, y2 + 20),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+                    cv2.putText(frame, label, (x1, y1 - 10),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
 
         prev_positions = new_positions
-
-        # ✅ Tampilkan frame langsung (320x240 sudah kecil)
-        cv2.imshow(window_name, frame)
-
+        cv2.imshow(f"Kamera {camera_index}", frame)
         if cv2.waitKey(1) & 0xFF == ord('x'):
             break
 
     cap.release()
     cv2.destroyAllWindows()
 
-# Jalankan dua kamera
-thread1 = threading.Thread(target=process_camera, args=(0, "Kamera 1"))
-thread2 = threading.Thread(target=process_camera, args=(1, "Kamera 2"))
-
-thread1.start()
-thread2.start()
-
-thread1.join()
-thread2.join()
+# Main loop: alternating cameras
+while True:
+    process_camera(0)
+    process_camera(1)
