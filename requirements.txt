@@ -9,3 +9,12 @@ ultralytics>=8.0.0
 
 # OCR untuk baca plat nomor
 easyocr>=1.4.1
+
+#untuk pengganti yolo for raspy
+tflite-runtime
+
+#untuk log
+pandas
+
+#untuk plot
+matplotlib
