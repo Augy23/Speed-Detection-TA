@@ -1,20 +1,6 @@
-# Untuk OpenCV (dengan GUI support)
-opencv-python>=4.5.3.56
-
-# Numerik & array processing
-numpy>=1.19.2
-
-# YOLOv8 dari Ultralytics
-ultralytics>=8.0.0
-
-# OCR untuk baca plat nomor
-easyocr>=1.4.1
-
-#untuk pengganti yolo for raspy
-tflite-runtime
-
-#untuk log
-pandas
-
-#untuk plot
-matplotlib
+opencv-python
+torch
+numpy
+pytesseract
+pytelegrambotapi
+Pillow
